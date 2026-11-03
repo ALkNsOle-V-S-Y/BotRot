@@ -30,7 +30,7 @@ def run_mock_server():
 
 # قراءة المواقع من ملف "sites.txt"
 def read_sites():
-    with open("sites.txt", "r") as file:
+    with open("sites312.txt", "r") as file:
         sites = [line.strip() for line in file.readlines()]
     return sites
 
