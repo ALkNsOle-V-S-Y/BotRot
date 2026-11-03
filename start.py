@@ -2,6 +2,8 @@ import time
 import requests
 import asyncio
 import socket
+import http.server
+import threading
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackContext, MessageHandler, filters
 from threading import Thread, Lock
@@ -9,7 +11,7 @@ from threading import Thread, Lock
 # المتغيرات لتخزين حالة الهجوم
 attack_status = {}
 attack_sites = {}
-bot_token = "6359504142:AAEG_Mpm1y53QYo9Lj-oVfeNsCGwBGAkDwk"
+bot_token = "7157656859:AAFS8DDWpwWM_WgIi5wd6rum7wSaX4StSH8"
 
 # تحديد الـ chat_id المسموح له باستخدام البوت
 ALLOWED_CHAT_ID = [1254652875]  # ضع هنا الـ chat_id الذي تريد السماح له باستخدام البوت
@@ -19,9 +21,16 @@ attack_lock = Lock()
 attack_in_progress = False  # متغير لتتبع حالة الهجوم
 last_attack_time = time.time()  # وقت الهجوم الأخير
 
+# خادم وهمي لإرضاء خطة Render المجانية
+def run_mock_server():
+    server_address = ('', 8080)
+    httpd = http.server.HTTPServer(server_address, http.server.SimpleHTTPRequestHandler)
+    print("Mock server running on port 8080...")
+    httpd.serve_forever()
+
 # قراءة المواقع من ملف "sites.txt"
 def read_sites():
-    with open("sites312.txt", "r") as file:
+    with open("sites.txt", "r") as file:
         sites = [line.strip() for line in file.readlines()]
     return sites
 
@@ -152,7 +161,7 @@ async def attack(update: Update, context: CallbackContext):
     target_url = f"{protocol}://{target}"
 
     keyboard = [
-        [InlineKeyboardButton("Checkhost", url=f"https://check-host.net/check-http?host={target_url}")]
+        [InlineKeyboardButton("Checkhost", url=f"https://check-host.net{target_url}")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -226,6 +235,9 @@ async def start(update: Update, context: CallbackContext):
 
 # إعداد البوت
 def main():
+    # تشغيل الخادم الوهمي في الخلفية لإرضاء Render
+    threading.Thread(target=run_mock_server, daemon=True).start()
+
     application = Application.builder().token(bot_token).build()
 
     application.add_handler(CommandHandler("start", start))
