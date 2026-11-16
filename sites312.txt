@@ -11,7 +11,7 @@ http://103.160.4.13/.home13.php
 http://ankpowersolutions.com/images/bg/wp/home13.php
 https://datacloudec.com/wp-content/null.php
 http://www.blenterprises.in/images/home13.php
-http://dentysta-szwajcaria.com/wp-content/uploads/kaswara/fonts_icon/iconset-10ab7866/home13.php
+http://dentysta-szwajcaria.com/home13.php
 https://clinicaicrome.com/wp-content/uploads/kaswara/fonts_icon/glyphs-f5e3a487/home13.php
 https://piotrfudalej.com/wp-content/themes/home13.php
 https://smileline.pl/home13.php
